@@ -1,55 +1,92 @@
 from transformers import pipeline
 import json
 from typing import List, Dict
+import logging
+import torch
+import re
+
+logging.basicConfig(level=logging.INFO,
+                   format='%(asctime)s - %(levelname)s - %(message)s')
 
 class VisaInfoExtractor:
-    def __init__(self, model_name: str = "meta-llama/Llama-2-7b-chat-hf"):
-        """
-        Initialize the extractor with Meta's Llama model.
-        Make sure to run 'huggingface-cli login' first.
-        """
-        print("Initializing model pipeline...")
-        self.pipe = pipeline(
-            "text-generation",
-            model=model_name,
-            max_length=512,
-            temperature=0.1,
-            device_map="auto"
-        )
-        print("Model pipeline ready!")
+    def __init__(self, model_name: str = "google/flan-t5-xl"):
+        try:
+            logging.info("Initializing model pipeline...")
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            logging.info(f"Using device: {device}")
+            
+            self.pipe = pipeline(
+                "text2text-generation",
+                model=model_name,
+                device=device
+            )
+            logging.info("Model pipeline ready!")
+        except Exception as e:
+            logging.error(f"Error initializing model: {str(e)}")
+            raise
+
+    def _parse_response(self, response: str) -> Dict:
+        """Parse the key-value response into a dictionary"""
+        try:
+            # Use regex to extract key-value pairs
+            pattern = r'(\w+)\s*=\s*"([^"]*)"'
+            matches = re.findall(pattern, response)
+            
+            if matches:
+                return {key: value for key, value in matches}
+            return None
+            
+        except Exception as e:
+            logging.error(f"Error parsing response: {e}")
+            return None
 
     def process_message(self, message: str) -> Dict:
-        messages = [
-            {"role": "system", "content": "You are a helpful assistant that extracts visa requirement information from text."},
-            {"role": "user", "content": f"""
-            Extract visa requirement information for refugee travel document holders from this message
-            and format it exactly like this JSON structure:
-            {{
-                "country": "",
-                "visaRequirement": "Visa required/Visa not required/E-Visa/Does not recognize US issued Refugee Travel Document",
-                "duration": "90 days or N/A",
-                "notes": ""
-            }}
-            
-            Message: {message}
-            """}
-        ]
-        
-        response = self.pipe(messages)[0]['generated_text']
         try:
-            json_str = response[response.find('{'):response.rfind('}')+1]
-            return json.loads(json_str)
-        except json.JSONDecodeError:
+            logging.info(f"Processing message: {message[:50]}...")
+            
+            prompt = f"""These are the chats from a group chat that travelers with Refugee Travel Document share their travel experience. RTD stands for REfugee Travel Document. Extract visa information from this text and output ONLY a JSON object.
+
+Text: {message}
+
+The JSON must contain these exact fields:
+- country: the country mentioned
+- visaRequirement: the visa requirement (must be one of: "Visa required", "Visa not required", "E-Visa", or "Does not recognize RTD")
+- duration: how long one can stay (use "N/A" if not mentioned)
+- notes: just add some notes that might be helpful (use "N/A" if there is nothing signiicant. .e.g. Visa application takes 3 months, or something like that might )
+
+Output the JSON only, no other text."""
+
+            # Generate response
+            response = self.pipe(
+                prompt,
+                max_length=256,
+                num_return_sequences=1,
+                temperature=0,  # Deterministic output
+                do_sample=False
+            )[0]['generated_text'].strip()
+            
+            logging.info(f"Raw response: {response}")
+            
+            # Parse the response into a dictionary
+            result = self._parse_response(response)
+            if result:
+                logging.info(f"Parsed result: {result}")
+            return result
+
+        except Exception as e:
+            logging.error(f"Error in process_message: {str(e)}")
             return None
 
     def process_batch(self, messages: List[str]) -> List[Dict]:
         results = []
         unique_countries = set()
         
+        logging.info(f"Processing batch of {len(messages)} messages")
         for message in messages:
             info = self.process_message(message)
-            if info and info['country'] not in unique_countries:
+            if info and info.get('country') and info['country'] not in unique_countries:
                 results.append(info)
                 unique_countries.add(info['country'])
-                
+                logging.info(f"Added result for {info['country']}")
+        
         return results
