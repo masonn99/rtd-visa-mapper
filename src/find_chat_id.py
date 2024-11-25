@@ -1,4 +1,4 @@
-# src/find_chat_id.py
+# find the chat_id of a telegram group
 import asyncio
 from telegram_client import TelegramMessageFetcher
 

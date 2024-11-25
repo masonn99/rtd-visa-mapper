@@ -1,4 +1,4 @@
-# src/telegram_client.py
+
 from telethon import TelegramClient
 from telethon.tl.types import PeerChannel, PeerChat
 import os
